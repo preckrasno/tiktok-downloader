@@ -33,7 +33,12 @@ async def get_message(message: Message):
         error_message = str(e)
         print(f"Failed to send video due to: {error_message}")
         if "Not enough rights" in error_message:
-            await message.reply("I do not have enough rights to send videos in this chat. Please adjust my permissions and try again.")
+            try:
+                # Attempt to notify the user about permission issues
+                await message.reply("I do not have enough rights to send videos or messages in this chat. Please adjust my permissions.")
+            except BadRequest:
+                # If even the reply fails, log the issue and possibly alert an admin
+                print("Could not notify the user due to insufficient permissions.")
         elif "Message to reply not found" in error_message:
             try:
                 await message.reply("The original message was not found. Please resend your request.")
