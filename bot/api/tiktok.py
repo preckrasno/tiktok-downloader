@@ -20,12 +20,16 @@ def retries(times: int):
     def decorator(func):
         @wraps(func)
         async def wrapper(*args, **kwargs):
-            for _ in range(times):
+            last_exception = None
+            for attempt in range(times):
                 try:
-                     return await func(*args, **kwargs)
-                except Exception as ex:
-                    logging.exception(ex)
-                    await asyncio.sleep(0.5)
+                    return await func(*args, **kwargs)
+                except Retrying as ex:
+                    logging.warning(f"Retrying attempt {attempt + 1} of {times} failed: {str(ex)}")
+                    last_exception = ex
+                    await asyncio.sleep(0.5 * (attempt + 1))
+            logging.error("All retry attempts failed.")
+            raise last_exception
         return wrapper
     return decorator
 
@@ -50,10 +54,14 @@ class TikTokAPI:
         )
     
     async def _primary_method(self, soup, client, page_id):
-        if script := soup.select_one(self.script_selector):
-            script = json.loads(script.text)
-        else:
-            raise Retrying("no script")
+        script = soup.select_one(self.script_selector)
+        if not script:
+            raise Retrying("No script found with selector.")
+
+        try:
+            data = json.loads(script.text)
+        except json.JSONDecodeError:
+            raise Retrying("Failed to decode JSON from script.")
 
         modules = tuple(script.get("ItemModule").values())
         if not modules:
@@ -112,20 +120,18 @@ class TikTokAPI:
 
     @retries(times=3)
     async def download_video(self, url: str) -> bytes:
-
         async with httpx.AsyncClient(headers=self.headers, timeout=30,
                                     cookies=self._tt_webid_v2, follow_redirects=True) as client:
             page = await client.get(url, headers=self._user_agent)
+            page.raise_for_status()  # Ensure the page is loaded correctly
             page_id = page.url.path.rsplit('/', 1)[-1]
-
             soup = BeautifulSoup(page.text, 'html.parser')
 
             try:
-                video_content = await self._primary_method(soup, client, page_id)
-            except Retrying:
-                video_content = await self._secondary_method(client, url)
-
-            return video_content
+                return await self._primary_method(soup, client, page_id)
+            except Retrying as primary_error:
+                logging.info(f"Primary method failed: {primary_error}, attempting secondary method.")
+                return await self._secondary_method(client, url)
 
     @property
     def _user_agent(self) -> dict:
